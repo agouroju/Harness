@@ -1,77 +1,91 @@
-# HANDOFF — AI DevTool Radar (Harness Engineering Hack)
+# AI DevTool Radar — Project Handdown
 
-State as of 2026-06-12 ~20:30 UTC. Repo: `github.com/agouroju/Harness`, working dir
-`/Users/sidharthareddypotu/Aditya/engine`. **The project is WORKING END TO END.**
+Updated 2026-06-12 ~22:50 UTC, minutes before demo. Repo: `github.com/agouroju/Harness`,
+working dir `/Users/sidharthareddypotu/Aditya/engine`. Everything below is BUILT AND VERIFIED
+unless marked otherwise.
 
-## What this is
+## What the project is, and who it's for
 
-Hackathon entry (Context Engineering Challenge): an autonomous agent that ingests
-real-time GitHub + Hacker News data into ClickHouse, writes its own SQL to find
-signals, grounds findings in Senso, and publishes cited briefings to cited.md,
-fully traced in Langfuse. Judging: Autonomy, Idea, Technical Implementation,
-Tool Use (3+ sponsor tools), 3-min demo. Sponsor tools in use: ClickHouse,
-Senso/cited.md, Langfuse (+ Airbyte planned, see TODO).
+**AI DevTool Radar is a fully autonomous analyst for the AI developer-tools ecosystem.**
+The audience is anyone building with or betting on AI tooling (developers, founders,
+investors) who can't keep up with the firehose of releases, debates, and repo activity.
+Nobody operates it: the user's ONLY input is *what to watch* — a list of GitHub repos and
+blog/news feeds. The radar syncs those sources hourly, writes its own SQL to find what's
+newsworthy, and publishes a fully-cited intelligence briefing to cited.md on a schedule.
 
-## Proof it works
+Built for the Harness Engineering Hack "Context Engineering Challenge": autonomous agent,
+real action on the open web, grounded in ground-truth sources, 3+ sponsor tools,
+published to cited.md.
 
-- **Live published article**: https://cited.md/article/d8589037-c7f0-4aa3-957f-5c7ba0f5600b
-  (re-running updates the same day's article: `citeables_action: update`)
-- Langfuse traces visible at us.cloud.langfuse.com, project `radar`
-  (`/project/cmqbdlnol01tyad0dmu6xf51e/traces`) — shows agent-written SQL + LLM calls
-- ClickHouse Cloud service `radar` (AWS us-east-1, host in `.env`) holds
-  ~459 GitHub issues/PRs, ~36 HN stories, repo star snapshots
+## What each tech does (every one load-bearing)
+
+| Tech | Role |
+|---|---|
+| **Airbyte** | ALL ingestion. One GitHub source (10 repos: issues/PRs/stars) + 8 RSS pipelines (OpenAI & Anthropic news mirrors, Google AI, Hugging Face, LangChain, Simon Willison, HN front page, HN AI-agent search), hourly syncs into ClickHouse. ALSO the control plane: the app creates/deletes pipelines through Airbyte's API when the user edits sources. |
+| **ClickHouse** | Memory + analysis engine. Databases `radar` (agent-enriched HN context) and `radar_airbyte` (~90k issue rows + feed items). The agent's intelligence is SQL it writes itself against this data. |
+| **OpenAI (gpt-4o-mini)** | The brain: proposes analytical SQL, drafts the cited briefing. |
+| **Senso → cited.md** | Ground-truth knowledge base + publishing pipeline. Every run ingests its evidence into Senso, then publishes via content-engine to the cited.md destination. |
+| **Langfuse** | Observability: every run is one trace — prompts, agent-written SQL, latency, cost (~$0.0002/run). Project `radar`, US region. |
+| **Render** | Hosts the fullstack web app (frontend dashboard + backend + 6h scheduler), free tier. |
+| **Python (stdlib http.server)** | The glue: agent loop, web dashboard, watchlist→Airbyte reconciler. |
+
+## The full loop
+
+tracked_repos.txt / tracked_feeds.txt (user edits, or web UI "Track a new source")
+→ `pipelines.reconcile()` creates/deletes Airbyte sources+connections to match
+→ Airbyte syncs everything hourly into ClickHouse
+→ agent run (web "Sync & publish briefing" button, 6h scheduler, or `--once`):
+  triggers all Airbyte syncs → LLM writes 3 SQL queries against the live schema
+  (auto-discovers `radar_airbyte.*` tables) → executes (SELECT-only guard) →
+  drafts briefing with inline citations → grounds evidence in Senso KB →
+  publishes to cited.md → Langfuse traces it all.
+
+## Live URLs (for the demo)
+
+- **Published article**: https://cited.md/article/d8589037-c7f0-4aa3-957f-5c7ba0f5600b
+- **Web app (Render)**: https://ai-devtool-radar.onrender.com (deploy started 22:46 UTC —
+  verify it finished; free tier sleeps after idle, first hit takes ~50s)
+- **Local web app**: `uv run python -m src.webapp` → http://localhost:8000
+- **Langfuse traces**: us.cloud.langfuse.com → project radar → Tracing
+- **Airbyte pipelines**: cloud.airbyte.com (9 connections, hourly)
+- **Devpost entry**: submission 1049032, Harness Engineering Hack
+
+## 3-minute demo script
+
+1. (30s) Problem: the AI tooling ecosystem moves too fast; analysts are slow and uncited.
+2. (60s) Web app: show tracked sources, add a feed live ("Start tracking" — point out it
+   creates a real Airbyte pipeline automatically), press "Sync & publish briefing".
+3. (60s) While it runs: Langfuse trace (the SQL the agent wrote ITSELF), Airbyte
+   connections page (9 managed pipelines), ClickHouse row counts on the dashboard.
+4. (30s) The payoff: the cited.md article — every claim hyperlinked. Monetization
+   next-step: premium deep-dives behind x402 so other agents pay to read.
+
+## Auth decision
+
+Google OAuth deliberately skipped (consent screens + redirect URIs = not worth it at a
+hackathon). Built-in HTTP Basic auth exists: set `WEB_USERNAME` + `WEB_PASSWORD` env vars
+on Render to lock the dashboard. Currently OFF for frictionless demoing.
+
+## Known limits / gotchas (tell the next agent)
+
+- Render free tier: cold starts (~50s), and `tracked_*.txt` edits are EPHEMERAL on Render
+  (lost on redeploy) — fine for demo; persistence would move the watchlist into ClickHouse.
+- Senso publish needs `geo_question_id` (env pinned); destination activation was via
+  undocumented `PATCH /org/content-generation` — already done, don't touch.
+- ClickHouse Cloud: no `FINAL`, no session `USE`; all tables fully qualified.
+- OpenAI/Anthropic block bot RSS — their feeds are Google News mirrors (`site:` queries).
+- Git: inside /Aditya, commits author as agouroju; push via the SSH remote only.
+- The user's shell proxies commands through `rtk`; weird CLI flag errors = use Read tool.
+- GITHUB_TOKEN is a short-lived `gh` token — if Airbyte's GitHub source starts failing
+  auth, mint a real PAT and update the source config (or rerun `--sync-sources` with a
+  fresh token in .env).
 
 ## Commands
 
 ```bash
-cd /Users/sidharthareddypotu/Aditya/engine
-uv run python -m src.main --check   # validate all connections
-uv run python -m src.main --once    # one full run: ingest -> SQL -> publish
-uv run python -m src.main --loop    # autonomous loop (RADAR_INTERVAL_MIN=60)
+uv run python -m src.main --check         # validate every connection
+uv run python -m src.main --once          # one autonomous run end-to-end
+uv run python -m src.main --sync-sources  # reconcile Airbyte with watchlists
+uv run python -m src.main --add-feed URL / --add-repo owner/repo / --list-feeds
+uv run python -m src.webapp               # the dashboard (what's deployed on Render)
 ```
-
-## Credentials — ALL in `.env` (gitignored), all working
-
-ClickHouse (host/password), Senso (`tgr_` key + `SENSO_PUBLISHER_ID` pinned to
-cited.md + `SENSO_QUESTION_ID` pinned), OpenAI key (borrowed from
-`../hack/researchbrain/.env.local` ROCKETRIDE_OPENAI_KEY), Langfuse pk/sk
-(US region), GitHub token (from `gh auth token`).
-
-## Hard-won API knowledge (do not rediscover)
-
-- **Senso API**: base `https://apiv2.senso.ai/api/v1`, header `X-API-Key`.
-  Ingest: `POST /org/kb/raw {title, text}`. Publish: `POST /org/content-engine/publish
-  {raw_markdown, seo_title, summary, geo_question_id, publisher_ids}`.
-  `geo_question_id` is REQUIRED (auto-created via `POST /org/prompts
-  {question_text, type:"awareness"}` — see `src/senso.py:ensure_question_id`).
-  Destination activation has NO public endpoint and no UI toggle; it was unlocked via
-  `PATCH /org/content-generation {enable_content_generation: true, publishers: [<id>]}`
-  — already done for this org, cited.md publisher id `afa1052b-8226-438c-895e-335dcf21743a`.
-- **ClickHouse Cloud**: SharedMergeTree does NOT support `FINAL` — the agent prompt
-  tells the LLM to dedupe with GROUP BY + argMax. HTTP sessions don't persist `USE db`,
-  so every table reference is fully qualified (`radar.hn_stories`).
-- **Git identity**: anything under `/Aditya` commits as Aditya Gouroju and pushes
-  via SSH key `/Aditya/id_aditya` (gitconfig includeIf). Remote must stay SSH
-  (`git@github.com:agouroju/Harness.git`) — https pushes as sid-rp and gets 403.
-- The user's shell rewrites some commands through `rtk` (token-saving proxy); if a
-  CLI flag fails oddly, that's why.
-
-## TODO (priority order)
-
-1. **Airbyte** (4th sponsor tool, ~15 min): cloud.airbyte.com — GitHub source
-   (repos in `src/config.py` TRACKED_REPOS) -> ClickHouse destination (creds from
-   `.env`, database `radar`), hourly schedule. Then set `INGEST_MODE=airbyte` in
-   `.env` (skips built-in ingester; tables are compatible by design).
-2. **Demo prep**: rehearse 3-min script in README.md; keep one published article
-   as backup; show Langfuse trace of agent-written SQL + the cited.md article.
-3. **Devpost submission**: devpost.com entry exists (Harness Engineering Hack,
-   submission 1049032) — needs writeup + repo link + demo video.
-4. Optional: `--loop` running during judging for the autonomy story; x402 paywall
-   mention as monetization next-step (do not build).
-
-## File map
-
-`src/config.py` env + tracked repos · `src/db.py` ClickHouse client/DDL/SELECT-guard
-· `src/ingest.py` HN+GitHub direct ingest (Airbyte fallback) · `src/senso.py` Senso
-client (ingest/draft/publish/question) · `src/llm.py` OpenAI-compatible client w/
-Langfuse wrap · `src/agent.py` the run pipeline · `src/main.py` CLI entry.
