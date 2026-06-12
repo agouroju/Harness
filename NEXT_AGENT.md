@@ -13,7 +13,9 @@ uv run python -m src.main --check    # expect all ✓ (Langfuse line included)
 
 If a ✓ turns into ✗, fix ONLY that connection (creds are in `.env`) before anything else.
 
-## Step 1 — Airbyte integration: ✅ MOSTLY DONE (verify the sync finished)
+## Step 1 — Airbyte integration: ✅ DONE AND VERIFIED
+(First sync succeeded: 11,727 rows in radar_airbyte.issues. Full --once run
+afterwards published to cited.md successfully. Nothing left in this step.)
 
 Already completed in Airbyte Cloud (account adityagouroju@gmail.com, workspace
 062aea22-65cf-426e-a1f5-597497a3cbe7):
