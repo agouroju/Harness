@@ -2,6 +2,9 @@
 briefing, ground it in Senso, publish to cited.md."""
 
 from datetime import datetime, timezone
+from html import unescape as html_unescape
+
+import requests
 
 from . import config, db, ingest, llm, senso
 
@@ -24,6 +27,10 @@ SQL_PROMPT = """{schema}
 
 Write 3 different ClickHouse SELECT queries to surface the most newsworthy signals from
 the last {hours} hours. Rules:
+- At least one query MUST target the radar_airbyte feed tables (names ending in
+  `__items`) — these hold new blog/news posts from LLM providers (OpenAI, Anthropic,
+  Google, Hugging Face, etc). Select link, title, published, description; filter on
+  published >= now() - INTERVAL {hours} HOUR
 - SELECT/WITH only, single statement each, always LIMIT <= 20
 - Include url and title columns whenever possible (needed for citations)
 - Only select columns that exist in the schema. If a table lacks url/title, derive
@@ -221,6 +228,61 @@ def hn_discussion_context(ch, findings: list[dict]) -> str:
     return "\n\n".join(sections)
 
 
+def _strip_html(raw: str) -> str:
+    import re
+
+    text = re.sub(r"<(script|style|nav|header|footer)[^>]*>.*?</\1>", " ", raw, flags=re.S | re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html_unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _finding_article_urls(findings: list[dict], limit: int = 4) -> list[tuple[str, str]]:
+    """(title, url) pairs for feed items in the findings, best first."""
+    pairs = []
+    seen = set()
+    for finding in findings:
+        columns = [str(col).lower() for col in finding["columns"]]
+        link_idx = next((columns.index(c) for c in ("link", "url") if c in columns), None)
+        title_idx = columns.index("title") if "title" in columns else None
+        if link_idx is None:
+            continue
+        for row in finding["rows"]:
+            url = str(row[link_idx] or "")
+            if not url.startswith("http") or "ycombinator.com" in url or "github.com" in url:
+                continue
+            if url in seen:
+                continue
+            seen.add(url)
+            title = str(row[title_idx]) if title_idx is not None else url
+            pairs.append((title, url))
+    return pairs[:limit]
+
+
+@observe(name="article-context")
+def feed_article_context(findings: list[dict]) -> str:
+    """Fetch the FULL source pages for selected feed/blog items so the briefing
+    summarizes real articles, not RSS snippets."""
+    sections = []
+    for title, url in _finding_article_urls(findings):
+        try:
+            resp = requests.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; AIDevToolRadar/1.0)"},
+                timeout=15,
+                allow_redirects=True,
+            )
+            text = _strip_html(resp.text)[:3500]
+            if len(text) < 200:
+                continue
+            sections.append(f"### {title}\nArticle URL: {url}\nFull-article excerpt:\n{text}")
+        except Exception as err:
+            print(f"  ! article fetch failed for {url}: {err}")
+    if not sections:
+        return "No full-article excerpts could be fetched for the selected feed items."
+    return "\n\n".join(sections)
+
+
 @observe(name="draft-briefing")
 def draft_briefing(findings: list[dict], discussion: str) -> dict:
     date = datetime.now(timezone.utc).strftime("%B %d, %Y")
@@ -263,6 +325,8 @@ def run_once(ingest_first: bool = False) -> dict:
 
     print("Drafting cited briefing...")
     discussion = hn_discussion_context(ch, findings)
+    articles = feed_article_context(findings)
+    discussion = f"{discussion}\n\n## Full-article excerpts from blog/news findings\n{articles}"
     briefing = draft_briefing(findings, discussion)
 
     print("Grounding sources in Senso...")

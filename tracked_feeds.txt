@@ -9,3 +9,7 @@ https://blog.langchain.dev/rss/
 https://simonwillison.net/atom/everything/
 https://hnrss.org/frontpage?points=50
 https://hnrss.org/newest?q=AI+agent&points=20
+https://ai.meta.com/blog/rss/
+https://deepmind.google/blog/rss.xml
+https://github.blog/feed/
+https://vercel.com/atom
