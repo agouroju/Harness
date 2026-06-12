@@ -6,7 +6,7 @@ from . import config
 
 DDL = [
     """
-    CREATE TABLE IF NOT EXISTS hn_stories (
+    CREATE TABLE IF NOT EXISTS {db}.hn_stories (
         id UInt64,
         title String,
         url String,
@@ -19,7 +19,7 @@ DDL = [
     ) ENGINE = ReplacingMergeTree(fetched_at) ORDER BY id
     """,
     """
-    CREATE TABLE IF NOT EXISTS github_issues (
+    CREATE TABLE IF NOT EXISTS {db}.github_issues (
         repo String,
         number UInt32,
         is_pr UInt8,
@@ -34,7 +34,7 @@ DDL = [
     ) ENGINE = ReplacingMergeTree(fetched_at) ORDER BY (repo, number)
     """,
     """
-    CREATE TABLE IF NOT EXISTS github_repo_stats (
+    CREATE TABLE IF NOT EXISTS {db}.github_repo_stats (
         repo String,
         stars UInt32,
         forks UInt32,
@@ -47,13 +47,13 @@ DDL = [
 SCHEMA_DESCRIPTION = """
 Database: {db} (ClickHouse). Tables:
 
-hn_stories(id, title, url, points, num_comments, author, created_at DateTime, matched_query)
+%RADAR%.hn_stories(id, title, url, points, num_comments, author, created_at DateTime, matched_query)
   -- Hacker News stories about AI dev tools. ReplacingMergeTree: use `FINAL` or max(fetched_at) dedup.
 
-github_issues(repo, number, is_pr UInt8, title, url, author, state, comments, created_at, updated_at)
+%RADAR%.github_issues(repo, number, is_pr UInt8, title, url, author, state, comments, created_at, updated_at)
   -- Issues AND pull requests (is_pr=1) for tracked AI tooling repos. ReplacingMergeTree: use `FINAL`.
 
-github_repo_stats(repo, stars, forks, open_issues, watched_at)
+%RADAR%.github_repo_stats(repo, stars, forks, open_issues, watched_at)
   -- Periodic star/fork snapshots per repo (append-only time series).
 """
 
@@ -69,13 +69,12 @@ def client():
 
 def init(ch) -> None:
     ch.command(f"CREATE DATABASE IF NOT EXISTS {config.CLICKHOUSE_DATABASE}")
-    ch.command(f"USE {config.CLICKHOUSE_DATABASE}")
     for stmt in DDL:
-        ch.command(stmt)
+        ch.command(stmt.format(db=config.CLICKHOUSE_DATABASE))
 
 
 def schema_description() -> str:
-    return SCHEMA_DESCRIPTION.format(db=config.CLICKHOUSE_DATABASE)
+    return SCHEMA_DESCRIPTION.replace("%RADAR%", config.CLICKHOUSE_DATABASE).format(db=config.CLICKHOUSE_DATABASE)
 
 
 def run_select(ch, sql: str, max_rows: int = 50):

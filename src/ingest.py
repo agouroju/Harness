@@ -54,7 +54,7 @@ def ingest_hn(ch) -> int:
         time.sleep(0.3)
     if rows:
         ch.insert(
-            "hn_stories",
+            f"{config.CLICKHOUSE_DATABASE}.hn_stories",
             rows,
             column_names=[
                 "id", "title", "url", "points", "num_comments",
@@ -103,7 +103,7 @@ def ingest_github(ch) -> int:
         time.sleep(0.3)
     if issue_rows:
         ch.insert(
-            "github_issues",
+            f"{config.CLICKHOUSE_DATABASE}.github_issues",
             issue_rows,
             column_names=[
                 "repo", "number", "is_pr", "title", "url",
@@ -112,7 +112,7 @@ def ingest_github(ch) -> int:
         )
     if stat_rows:
         ch.insert(
-            "github_repo_stats",
+            f"{config.CLICKHOUSE_DATABASE}.github_repo_stats",
             stat_rows,
             column_names=["repo", "stars", "forks", "open_issues"],
         )

@@ -94,7 +94,6 @@ def run_once() -> dict:
 
     ch = db.client()
     db.init(ch)
-    ch.command(f"USE {config.CLICKHOUSE_DATABASE}")
 
     counts = ingest.run(ch)
 
