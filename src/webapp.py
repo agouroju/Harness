@@ -1,18 +1,24 @@
-"""Minimal web dashboard for AI DevTool Radar."""
+"""Web dashboard for AI DevTool Radar.
+
+Users manage WHAT the radar watches (GitHub repos + blog/news feeds); the app
+manages HOW: every tracked source becomes a real Airbyte pipeline into
+ClickHouse, and scheduled runs analyze the data and publish a cited briefing.
+"""
 
 import base64
 import html
-import json
 import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import agent, airbyte, config, db, web_state
+from . import agent, airbyte, config, db, pipelines, watchlist, web_state
 
 ARTICLE_URL = "https://cited.md/article/d8589037-c7f0-4aa3-957f-5c7ba0f5600b"
 _run_lock = threading.Lock()
+
+INTERNAL_TABLES = {"watch_sources", "radar_runs"}
 
 
 def _escape(value) -> str:
@@ -27,32 +33,21 @@ def _article_url(result: dict) -> str:
     return ARTICLE_URL
 
 
-def _trigger_airbyte_sources() -> list[dict]:
+def _trigger_all_syncs() -> list[dict]:
+    """Kick every Airbyte pipeline so the analysis sees fresh data."""
     jobs = []
-    for source in web_state.list_sources(enabled_only=True):
-        connection_id = source["airbyte_connection_id"].strip()
-        if not connection_id:
-            jobs.append({"source": source["name"], "status": "skipped", "message": "No connection id"})
-            continue
+    try:
+        connections = airbyte.list_connections()
+    except Exception as err:
+        return [{"status": "error", "message": str(err)}]
+    for conn in connections:
         try:
-            result = airbyte.trigger_sync(connection_id)
-            job = {
-                "source": source["name"],
-                "connection_id": connection_id,
-                "trigger": result,
-                "status": "triggered",
-            }
-            job_id = airbyte.job_id(result)
-            if job_id and config.AIRBYTE_SYNC_WAIT_SECONDS:
-                job["wait_result"] = airbyte.wait_for_job(job_id, config.AIRBYTE_SYNC_WAIT_SECONDS)
-            jobs.append(job)
+            airbyte.trigger_sync(conn["connectionId"])
+            jobs.append({"source": conn.get("name", ""), "status": "triggered"})
         except Exception as err:
-            jobs.append({
-                "source": source["name"],
-                "connection_id": connection_id,
-                "status": "error",
-                "message": str(err),
-            })
+            jobs.append({"source": conn.get("name", ""), "status": "error", "message": str(err)})
+    if jobs and config.AIRBYTE_SYNC_WAIT_SECONDS:
+        time.sleep(min(config.AIRBYTE_SYNC_WAIT_SECONDS, 300))
     return jobs
 
 
@@ -63,12 +58,12 @@ def run_pipeline_async(trigger: str) -> str | None:
 
     def work() -> None:
         try:
-            jobs = _trigger_airbyte_sources() if airbyte.configured() else []
+            jobs = _trigger_all_syncs() if airbyte.configured() else []
             result = agent.run_once(ingest_first=False)
             web_state.finish_run(
                 run_id,
                 "success" if result.get("published") else "completed",
-                "Airbyte-managed analysis completed",
+                "Synced sources and published briefing",
                 _article_url(result),
                 jobs,
             )
@@ -99,57 +94,85 @@ def table_counts() -> list[tuple[str, int]]:
         ORDER BY table
         """,
     ).result_rows
-    return [(str(table), int(count or 0)) for table, count in rows]
+    return [
+        (str(table), int(count or 0))
+        for table, count in rows
+        if str(table) not in INTERNAL_TABLES
+    ]
+
+
+def _friendly_table(name: str) -> str:
+    if name.endswith("__items"):
+        return f"Feed: {name.removesuffix('__items').replace('_', ' ')}"
+    pretty = {
+        "issues": "GitHub issues & PRs (Airbyte)",
+        "repositories": "GitHub repositories (Airbyte)",
+        "github_issues": "GitHub issues & PRs (direct)",
+        "github_repo_stats": "GitHub star snapshots",
+        "hn_stories": "Hacker News stories",
+        "hn_comments": "Hacker News comments",
+        "hn_story_pages": "Story page excerpts",
+    }
+    return pretty.get(name, name)
 
 
 def render_dashboard(message: str = "") -> str:
-    sources = web_state.list_sources()
+    repos = config._load_tracked_repos()
+    feeds = config._load_tracked_feeds()
     runs = web_state.list_runs(15)
     counts = table_counts()
 
-    source_rows = "\n".join(
+    repo_rows = "\n".join(
         f"""
         <tr>
-          <td>{_escape(source['source_type'])}</td>
-          <td><strong>{_escape(source['name'])}</strong><br><span>{_escape(source['locator'])}</span></td>
-          <td><code>{_escape(source['airbyte_connection_id']) or '-'}</code></td>
-          <td>{'enabled' if source['enabled'] else 'paused'}</td>
+          <td><strong>{_escape(repo)}</strong><br><span>github.com/{_escape(repo)}</span></td>
           <td class="actions">
-            <form method="post" action="/sources/toggle">
-              <input type="hidden" name="id" value="{_escape(source['id'])}">
-              <button>{'Pause' if source['enabled'] else 'Enable'}</button>
-            </form>
-            <form method="post" action="/sources/sync">
-              <input type="hidden" name="id" value="{_escape(source['id'])}">
-              <button>Sync</button>
+            <form method="post" action="/watch/remove">
+              <input type="hidden" name="kind" value="repo">
+              <input type="hidden" name="value" value="{_escape(repo)}">
+              <button class="ghost">Stop tracking</button>
             </form>
           </td>
         </tr>
         """
-        for source in sources
-    ) or '<tr><td colspan="5">No sources yet.</td></tr>'
+        for repo in repos
+    ) or '<tr><td colspan="2">No repositories tracked yet.</td></tr>'
+
+    feed_rows = "\n".join(
+        f"""
+        <tr>
+          <td><strong>{_escape(pipelines.feed_slug(feed).replace('_', ' '))}</strong><br><span>{_escape(feed)}</span></td>
+          <td class="actions">
+            <form method="post" action="/watch/remove">
+              <input type="hidden" name="kind" value="feed">
+              <input type="hidden" name="value" value="{_escape(feed)}">
+              <button class="ghost">Stop tracking</button>
+            </form>
+          </td>
+        </tr>
+        """
+        for feed in feeds
+    ) or '<tr><td colspan="2">No feeds tracked yet.</td></tr>'
 
     run_rows = "\n".join(
         f"""
         <tr>
-          <td><code>{_escape(run['id'][:8])}</code></td>
-          <td>{_escape(run['trigger'])}</td>
+          <td>{_escape(run['finished_at'] or 'in progress')}</td>
+          <td>{_escape({'manual': 'Run button', 'schedule': 'Automatic'}.get(run['trigger'], run['trigger']))}</td>
           <td><span class="pill { _escape(run['status']) }">{_escape(run['status'])}</span></td>
-          <td>{_escape(run['finished_at'])}</td>
-          <td>{'<a href="' + _escape(run['article_url']) + '">article</a>' if run['article_url'] else '-'}</td>
+          <td>{'<a href="' + _escape(run['article_url']) + '" target="_blank">Read the briefing →</a>' if run['article_url'] else '—'}</td>
           <td>{_escape(run['message'])}</td>
         </tr>
         """
         for run in runs
-    ) or '<tr><td colspan="6">No runs yet.</td></tr>'
+    ) or '<tr><td colspan="5">No briefings yet — press "Sync & publish briefing".</td></tr>'
 
     count_rows = "\n".join(
-        f"<tr><td>{_escape(table)}</td><td>{count:,}</td></tr>"
+        f"<tr><td>{_escape(_friendly_table(table))}</td><td>{count:,}</td></tr>"
         for table, count in counts
     )
 
-    airbyte_status = "configured" if airbyte.configured() else "missing AIRBYTE_API_TOKEN"
-    auth_status = "enabled" if config.WEB_PASSWORD else "disabled"
+    airbyte_ok = airbyte.configured()
 
     return f"""<!doctype html>
 <html lang="en">
@@ -160,84 +183,104 @@ def render_dashboard(message: str = "") -> str:
   <style>
     :root {{ color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif; }}
     body {{ margin: 0; background: #f7f7f4; color: #1b1b18; }}
-    header {{ background: #111; color: white; padding: 18px 28px; display: flex; justify-content: space-between; align-items: center; }}
+    header {{ background: #111; color: white; padding: 18px 28px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }}
     header h1 {{ margin: 0; font-size: 20px; }}
     header span {{ color: #c8c8c0; font-size: 13px; }}
     main {{ max-width: 1180px; margin: 0 auto; padding: 24px; }}
     section {{ margin-bottom: 28px; }}
-    h2 {{ font-size: 16px; margin: 0 0 12px; }}
+    h2 {{ font-size: 16px; margin: 0 0 6px; }}
+    .hint {{ color: #666; font-size: 13px; margin: 0 0 12px; }}
     .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }}
+    .cols {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }}
     .metric {{ background: white; border: 1px solid #deded8; border-radius: 8px; padding: 14px; }}
     .metric strong {{ display: block; font-size: 20px; }}
     .metric span {{ color: #666; font-size: 12px; }}
     form.panel, .panel {{ background: white; border: 1px solid #deded8; border-radius: 8px; padding: 16px; }}
     label {{ display: block; font-size: 12px; color: #555; margin-bottom: 5px; }}
     input, select {{ width: 100%; box-sizing: border-box; border: 1px solid #cfcfc7; border-radius: 6px; padding: 9px; font: inherit; background: white; }}
-    .form-grid {{ display: grid; grid-template-columns: 160px 1fr 1.4fr 1.3fr auto; gap: 10px; align-items: end; }}
-    button {{ border: 0; border-radius: 6px; background: #111; color: white; padding: 9px 12px; font: inherit; cursor: pointer; }}
+    .form-grid {{ display: grid; grid-template-columns: 220px 1fr auto; gap: 10px; align-items: end; }}
+    button {{ border: 0; border-radius: 6px; background: #111; color: white; padding: 9px 14px; font: inherit; cursor: pointer; }}
+    button.ghost {{ background: transparent; color: #a33; border: 1px solid #d8c2c2; padding: 6px 10px; font-size: 12px; }}
     table {{ width: 100%; border-collapse: collapse; background: white; border: 1px solid #deded8; border-radius: 8px; overflow: hidden; }}
     th, td {{ border-bottom: 1px solid #ecece7; padding: 10px; text-align: left; vertical-align: top; font-size: 13px; }}
     th {{ background: #f0f0eb; color: #555; font-weight: 600; }}
-    code {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }}
-    td span {{ color: #666; }}
-    .actions {{ display: flex; gap: 8px; }}
+    td span {{ color: #666; font-size: 12px; }}
+    .actions {{ width: 1%; white-space: nowrap; }}
     .actions form {{ margin: 0; }}
     .pill {{ display: inline-block; border-radius: 999px; padding: 3px 8px; background: #e8e8e0; }}
     .pill.success {{ background: #d9f0df; }}
     .pill.failed {{ background: #f7d6d6; }}
     .pill.running {{ background: #fff1bf; }}
     .notice {{ background: #fff9da; border: 1px solid #eadc8a; border-radius: 8px; padding: 10px 12px; margin-bottom: 16px; }}
-    @media (max-width: 900px) {{ .grid, .form-grid {{ grid-template-columns: 1fr; }} .actions {{ display: block; }} }}
+    a {{ color: #0a58ca; }}
+    @media (max-width: 900px) {{ .grid, .form-grid, .cols {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
 <body>
   <header>
     <div>
       <h1>AI DevTool Radar</h1>
-      <span>Airbyte-managed sources, scheduled intelligence runs, cited.md publishing</span>
+      <span>Watches the AI ecosystem for you and publishes a cited daily briefing — automatically.</span>
     </div>
-    <form method="post" action="/runs/start"><button>Run now</button></form>
+    <form method="post" action="/runs/start"><button>Sync &amp; publish briefing</button></form>
   </header>
   <main>
     {'<div class="notice">' + _escape(message) + '</div>' if message else ''}
     <section class="grid">
-      <div class="metric"><strong>{len(sources)}</strong><span>tracked sources</span></div>
-      <div class="metric"><strong>{len([s for s in sources if s['enabled']])}</strong><span>enabled sources</span></div>
-      <div class="metric"><strong>{_escape(airbyte_status)}</strong><span>Airbyte API</span></div>
-      <div class="metric"><strong>{config.WEB_RUN_INTERVAL_HOURS:g}h</strong><span>schedule interval, auth {auth_status}</span></div>
+      <div class="metric"><strong>{len(repos)}</strong><span>GitHub repos tracked</span></div>
+      <div class="metric"><strong>{len(feeds)}</strong><span>blogs &amp; news feeds tracked</span></div>
+      <div class="metric"><strong>{'connected' if airbyte_ok else 'not connected'}</strong><span>Airbyte data pipelines</span></div>
+      <div class="metric"><strong>every {config.WEB_RUN_INTERVAL_HOURS:g}h</strong><span>automatic briefing schedule</span></div>
     </section>
 
     <section>
-      <h2>Add Source</h2>
-      <form class="panel form-grid" method="post" action="/sources/add">
-        <div><label>Type</label><select name="source_type"><option>github_repo</option><option>rss_feed</option><option>airbyte_connection</option></select></div>
-        <div><label>Name</label><input name="name" placeholder="Stripe changelog" required></div>
-        <div><label>Locator</label><input name="locator" placeholder="stripe/stripe-python or RSS URL" required></div>
-        <div><label>Airbyte connection ID</label><input name="airbyte_connection_id" placeholder="optional, triggers sync"></div>
-        <div><button>Add</button></div>
+      <h2>Track a new source</h2>
+      <p class="hint">Add a GitHub repository or any blog/news RSS feed. The radar creates the data pipeline for you — no setup needed.</p>
+      <form class="panel form-grid" method="post" action="/watch/add">
+        <div><label>Source type</label>
+          <select name="kind">
+            <option value="repo">GitHub repository</option>
+            <option value="feed">Blog or news feed (RSS)</option>
+          </select>
+        </div>
+        <div><label>Repository (owner/name) or feed URL</label><input name="value" placeholder="e.g. vercel/ai &nbsp;or&nbsp; https://blog.example.com/rss" required></div>
+        <div><button>Start tracking</button></div>
       </form>
     </section>
 
-    <section>
-      <h2>Sources</h2>
-      <table>
-        <thead><tr><th>Type</th><th>Source</th><th>Airbyte Connection</th><th>Status</th><th>Actions</th></tr></thead>
-        <tbody>{source_rows}</tbody>
-      </table>
+    <section class="cols">
+      <div>
+        <h2>Tracked GitHub repositories</h2>
+        <p class="hint">Issues, pull requests, and stars are synced hourly.</p>
+        <table>
+          <thead><tr><th>Repository</th><th></th></tr></thead>
+          <tbody>{repo_rows}</tbody>
+        </table>
+      </div>
+      <div>
+        <h2>Tracked blogs &amp; news feeds</h2>
+        <p class="hint">New posts are synced hourly via Airbyte.</p>
+        <table>
+          <thead><tr><th>Feed</th><th></th></tr></thead>
+          <tbody>{feed_rows}</tbody>
+        </table>
+      </div>
     </section>
 
     <section>
-      <h2>Recent Runs</h2>
+      <h2>Published briefings</h2>
+      <p class="hint">Each run analyzes the freshest data and publishes a fully-cited article to cited.md.</p>
       <table>
-        <thead><tr><th>ID</th><th>Trigger</th><th>Status</th><th>Finished</th><th>Output</th><th>Message</th></tr></thead>
+        <thead><tr><th>Finished</th><th>Started by</th><th>Status</th><th>Briefing</th><th>Notes</th></tr></thead>
         <tbody>{run_rows}</tbody>
       </table>
     </section>
 
     <section>
-      <h2>ClickHouse Tables</h2>
+      <h2>Live data</h2>
+      <p class="hint">What the radar currently knows — rows synced into ClickHouse.</p>
       <table>
-        <thead><tr><th>Table</th><th>Rows</th></tr></thead>
+        <thead><tr><th>Dataset</th><th>Rows</th></tr></thead>
         <tbody>{count_rows}</tbody>
       </table>
     </section>
@@ -291,6 +334,20 @@ class Handler(BaseHTTPRequestHandler):
         parsed = parse_qs(body)
         return {key: values[0] for key, values in parsed.items()}
 
+    def _apply_watch_change(self) -> str:
+        """Reconcile Airbyte after a watchlist edit; report what happened."""
+        if not airbyte.configured():
+            return "Saved. (Airbyte API not connected — pipeline not created yet.)"
+        report = pipelines.reconcile()
+        parts = []
+        if report["created"]:
+            parts.append("pipeline created and first sync started")
+        if report["deleted"]:
+            parts.append("pipeline removed")
+        if report["github_repos"]:
+            parts.append(f"GitHub sync now covers {report['github_repos']} repos")
+        return "Saved — " + (", ".join(parts) if parts else "pipelines already up to date")
+
     def do_GET(self) -> None:
         if not self._require_auth():
             return
@@ -306,30 +363,33 @@ class Handler(BaseHTTPRequestHandler):
             return
         form = self._form()
         try:
-            if self.path == "/sources/add":
-                source_id = web_state.add_source(
-                    form.get("source_type", "github_repo"),
-                    form.get("name", "").strip(),
-                    form.get("locator", "").strip(),
-                    form.get("airbyte_connection_id", "").strip(),
-                )
-                run_id = run_pipeline_async(f"source-added:{source_id}")
-                self._redirect("Source added; run queued" if run_id else "Source added; run already active")
-            elif self.path == "/sources/toggle":
-                source = web_state.get_source(form.get("id", ""))
-                if source:
-                    web_state.set_source_enabled(source["id"], not source["enabled"])
-                self._redirect("Source updated")
-            elif self.path == "/sources/sync":
-                source = web_state.get_source(form.get("id", ""))
-                if source and source["airbyte_connection_id"]:
-                    airbyte.trigger_sync(source["airbyte_connection_id"])
-                    self._redirect("Airbyte sync triggered")
+            if self.path == "/watch/add":
+                kind = form.get("kind", "repo")
+                value = form.get("value", "").strip()
+                if kind == "feed":
+                    feed, changed = watchlist.add_feed(value)
+                    label = feed
                 else:
-                    self._redirect("Source has no Airbyte connection id")
+                    repo, changed = watchlist.add_repo(value)
+                    label = repo
+                if not changed:
+                    self._redirect(f"Already tracking {label}")
+                    return
+                self._redirect(f"Now tracking {label}. {self._apply_watch_change()}")
+            elif self.path == "/watch/remove":
+                kind = form.get("kind", "repo")
+                value = form.get("value", "").strip()
+                if kind == "feed":
+                    watchlist.remove_feed(value)
+                else:
+                    watchlist.remove_repo(value)
+                self._redirect(f"Stopped tracking. {self._apply_watch_change()}")
             elif self.path == "/runs/start":
                 run_id = run_pipeline_async("manual")
-                self._redirect("Run queued" if run_id else "Run already active")
+                self._redirect(
+                    "Briefing run started — syncing sources, this takes a few minutes"
+                    if run_id else "A run is already in progress"
+                )
             else:
                 self._send_html("Not found", 404)
         except Exception as err:
@@ -345,7 +405,7 @@ def main() -> None:
         threading.Thread(target=scheduler_loop, daemon=True).start()
     server = ThreadingHTTPServer((config.WEB_HOST, config.WEB_PORT), Handler)
     print(f"AI DevTool Radar web app listening on http://{config.WEB_HOST}:{config.WEB_PORT}")
-    print(f"Scheduled Airbyte-managed runs every {config.WEB_RUN_INTERVAL_HOURS:g} hours")
+    print(f"Automatic briefing runs every {config.WEB_RUN_INTERVAL_HOURS:g} hours")
     server.serve_forever()
 
 

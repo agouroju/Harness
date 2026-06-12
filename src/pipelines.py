@@ -34,7 +34,9 @@ def reconcile(trigger_new: bool = True) -> dict:
     for conn in connections:
         conns_by_source.setdefault(conn.get("sourceId"), []).append(conn)
 
-    wanted = {feed_slug(url): url for url in config.TRACKED_FEEDS}
+    feeds = config._load_tracked_feeds()  # re-read: the file may have changed since import
+    repos = config._load_tracked_repos()
+    wanted = {feed_slug(url): url for url in feeds}
     existing_rss = {
         src["name"].removeprefix(RSS_NAME_PREFIX): src
         for src in sources
@@ -67,7 +69,7 @@ def reconcile(trigger_new: bool = True) -> dict:
 
     # Keep the GitHub source's repository list in step with tracked_repos.txt
     if config.AIRBYTE_GITHUB_SOURCE_ID and config.GITHUB_TOKEN:
-        airbyte.update_github_repositories(config.TRACKED_REPOS)
-        report["github_repos"] = len(config.TRACKED_REPOS)
+        airbyte.update_github_repositories(repos)
+        report["github_repos"] = len(repos)
 
     return report
