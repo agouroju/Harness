@@ -59,6 +59,8 @@ def publish_briefing(seo_title: str, summary: str, raw_markdown: str):
     body = {"raw_markdown": raw_markdown, "seo_title": seo_title, "summary": summary}
     if config.SENSO_QUESTION_ID:
         body["geo_question_id"] = config.SENSO_QUESTION_ID
+    if config.SENSO_PUBLISHER_ID:
+        body["publisher_ids"] = [config.SENSO_PUBLISHER_ID]
     try:
         return {"published": True, "response": _request("POST", "/org/content-engine/publish", body)}
     except SensoError as err:

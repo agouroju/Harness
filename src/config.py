@@ -16,6 +16,7 @@ CLICKHOUSE_DATABASE = os.getenv("CLICKHOUSE_DATABASE", "radar")
 SENSO_API_KEY = os.getenv("SENSO_API_KEY", "")
 SENSO_BASE_URL = os.getenv("SENSO_BASE_URL", "https://apiv2.senso.ai/api/v1")
 SENSO_QUESTION_ID = os.getenv("SENSO_QUESTION_ID", "")
+SENSO_PUBLISHER_ID = os.getenv("SENSO_PUBLISHER_ID", "")
 
 # LLM
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -65,4 +66,7 @@ def missing_required() -> list[str]:
         "SENSO_API_KEY": SENSO_API_KEY,
         "OPENAI_API_KEY": OPENAI_API_KEY,
     }
-    return [name for name, value in required.items() if not value]
+    def is_placeholder(v: str) -> bool:
+        return not v or "..." in v or v.startswith("xxxxx")
+
+    return [name for name, value in required.items() if is_placeholder(value)]
