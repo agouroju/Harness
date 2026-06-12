@@ -13,42 +13,29 @@ uv run python -m src.main --check    # expect all ✓ (Langfuse line included)
 
 If a ✓ turns into ✗, fix ONLY that connection (creds are in `.env`) before anything else.
 
-## Step 1 — Airbyte integration (the ONLY missing sponsor tool)
+## Step 1 — Airbyte integration: ✅ MOSTLY DONE (verify the sync finished)
 
-Goal: replace the built-in ingester with an Airbyte Cloud sync. The ClickHouse
-tables were designed so this is config-only — no code changes.
+Already completed in Airbyte Cloud (account adityagouroju@gmail.com, workspace
+062aea22-65cf-426e-a1f5-597497a3cbe7):
+- Source "GitHub": PAT auth, 10 tracked repos, connection test passed
+- Destination "ClickHouse": host from `.env`, port 8443, database `radar_airbyte`,
+  connection test passed
+- Connection "GitHub → ClickHouse" (id 086be19b-c436-4330-99a6-e04b7547478f):
+  streams `issues` + `repositories` only, Every 1 hour, first sync STARTED
+- Code already updated: `src/db.py schema_description(ch)` auto-discovers
+  `radar_airbyte.*` tables and feeds them to the agent's SQL prompt
 
-1. Go to https://cloud.airbyte.com (user may need to sign up — free trial, use
-   Google login with adityagouroju@gmail.com to match other accounts).
-2. **Source**: GitHub. Authenticate via OAuth (user clicks) or a PAT
-   (`gh auth token` in terminal gives one). Repositories: copy the list from
-   `src/config.py` `TRACKED_REPOS`. Streams needed: `issues` (and `repositories`
-   if available). Sync window: last 30 days is plenty.
-3. **Destination**: ClickHouse.
-   - Host: `CLICKHOUSE_HOST` from `.env` (no https://)
-   - Port: `8443`, SSL: enabled
-   - Database: `radar_airbyte`  ← use a SEPARATE database so Airbyte's own
-     table naming doesn't clash with the handwritten tables
-   - User `default`, password from `.env`
-4. **Connection**: source → destination, schedule "Every hour", start first sync.
-5. While sync runs, add the Airbyte tables to the agent's view of the world:
-   in `src/db.py` `SCHEMA_DESCRIPTION`, append a short paragraph describing the
-   `radar_airbyte.*` tables (inspect actual names/columns after sync with
-   `SHOW TABLES FROM radar_airbyte` via a quick `uv run python -c` script using
-   `src.db.client()`). The agent's SQL will then use BOTH data sources.
-6. Do NOT set `INGEST_MODE=airbyte` unless the Airbyte sync demonstrably contains
-   fresh HN-equivalent data — the built-in ingester also feeds `hn_stories`,
-   which Airbyte's GitHub source cannot. Keeping both is fine and honest:
-   Airbyte = GitHub firehose, built-in = HN. Update README/HANDOFF wording accordingly.
-7. Verify end-to-end: `uv run python -m src.main --once` → article updates on
-   cited.md; check the Langfuse trace mentions a query against `radar_airbyte.*`
-   (may need a run or two since the LLM chooses its own queries — you can nudge by
-   adding "prefer at least one query against radar_airbyte tables" to SQL_PROMPT).
-8. Commit + push (identity auto-switches to agouroju inside /Aditya; remote is SSH).
-
-Fallback if Airbyte signup/trial blocks (no card, region issues, time): SKIP IT.
-The project already satisfies "3+ sponsor tools" (ClickHouse, Senso/cited.md,
-Langfuse). Update the pitch to say Airbyte is the planned scale-out ingestion path.
+REMAINING VERIFICATION:
+1. Check the sync succeeded: connection status page in Airbyte, or
+   `uv run python -c "from src import db; print(db.client().query(\"SELECT table, sum(total_rows) FROM system.tables WHERE database='radar_airbyte' GROUP BY table\").result_rows)"`
+2. If the first sync FAILED, open the connection's job log in Airbyte Cloud —
+   most likely cause is ClickHouse permissions or the GitHub token (it used the
+   short-lived `gh auth token` of the sid-rp account; replace with a fresh PAT
+   in the source settings if expired).
+3. After data lands, run `uv run python -m src.main --once` and confirm a
+   Langfuse trace queries `radar_airbyte.*` (nudge SQL_PROMPT if needed).
+4. Keep `INGEST_MODE=direct` — built-in ingester still supplies Hacker News,
+   Airbyte supplies the GitHub firehose. Both is correct.
 
 ## Step 2 — Demo readiness (do not skip)
 
