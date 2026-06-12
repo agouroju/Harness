@@ -50,15 +50,44 @@ def ingest_ground_truth(title: str, markdown_text: str):
     return _request("POST", "/org/kb/raw", {"title": title, "text": markdown_text})
 
 
+_question_id: str | None = None
+
+
+def ensure_question_id() -> str:
+    """Drafts require a geo question; reuse the configured one or create ours."""
+    global _question_id
+    if config.SENSO_QUESTION_ID:
+        return config.SENSO_QUESTION_ID
+    if _question_id:
+        return _question_id
+    created = _request(
+        "POST",
+        "/org/prompts",
+        {
+            "question_text": "What is happening in the AI developer tools ecosystem right now?",
+            "type": "awareness",
+        },
+    )
+    _question_id = (
+        created.get("geo_question_id") or created.get("id") or created.get("prompt_id")
+        or (created.get("prompt") or {}).get("id")
+    )
+    print(f"  created Senso prompt {_question_id} (set SENSO_QUESTION_ID to reuse)")
+    return _question_id
+
+
 def publish_briefing(seo_title: str, summary: str, raw_markdown: str):
     """Publish to all configured destinations (cited.md/citeables by default).
 
     Falls back to saving a draft if direct publish is rejected, so a run
     never loses its output.
     """
-    body = {"raw_markdown": raw_markdown, "seo_title": seo_title, "summary": summary}
-    if config.SENSO_QUESTION_ID:
-        body["geo_question_id"] = config.SENSO_QUESTION_ID
+    body = {
+        "raw_markdown": raw_markdown,
+        "seo_title": seo_title,
+        "summary": summary,
+        "geo_question_id": ensure_question_id(),
+    }
     if config.SENSO_PUBLISHER_ID:
         body["publisher_ids"] = [config.SENSO_PUBLISHER_ID]
     try:

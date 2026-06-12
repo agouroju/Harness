@@ -5,16 +5,13 @@ from datetime import datetime, timezone
 
 from . import config, db, ingest, llm, senso
 
-try:
-    from langfuse import observe  # langfuse >= 3
-except ImportError:
-    try:
-        from langfuse.decorators import observe  # langfuse 2.x
-    except ImportError:  # not installed — no-op decorator
-        def observe(*args, **kwargs):
-            def wrap(fn):
-                return fn
-            return wrap if not args else args[0]
+if config.LANGFUSE_PUBLIC_KEY and config.LANGFUSE_SECRET_KEY:
+    from langfuse import observe
+else:  # tracing disabled — no-op decorator
+    def observe(*args, **kwargs):
+        def wrap(fn):
+            return fn
+        return wrap if not args else args[0]
 
 ANALYST_SYSTEM = """You are an autonomous data analyst for the AI developer-tools ecosystem.
 You write ClickHouse SQL to find genuinely interesting, *recent* signals: issue spikes,
@@ -27,7 +24,8 @@ Write 3 different ClickHouse SELECT queries to surface the most newsworthy signa
 the last {hours} hours. Rules:
 - SELECT/WITH only, single statement each, always LIMIT <= 20
 - Include url and title columns whenever possible (needed for citations)
-- Use FINAL on ReplacingMergeTree tables
+- FINAL is NOT supported. Deduplicate ReplacingMergeTree tables with
+  GROUP BY key columns + argMax(col, fetched_at) or max() aggregates
 
 Respond as JSON: {{"queries": [{{"goal": "...", "sql": "..."}}, ...]}}"""
 
