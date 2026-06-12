@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: ai-devtool-radar
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m src.webapp
+    envVars:
+      - key: WEB_SCHEDULER_ENABLED
+        value: "true"
+      - key: WEB_RUN_INTERVAL_HOURS
+        value: "6"
+      - key: PYTHON_VERSION
+        value: "3.11"

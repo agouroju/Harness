@@ -1,0 +1,11 @@
+# AI DevTool Radar feed watchlist
+# One RSS/Atom feed URL per line (LLM provider blogs, AI tool sites, HN searches).
+
+https://openai.com/news/rss.xml
+https://rsshub.app/anthropic/news
+https://blog.google/technology/ai/rss/
+https://huggingface.co/blog/feed.xml
+https://blog.langchain.dev/rss/
+https://simonwillison.net/atom/everything/
+https://hnrss.org/frontpage?points=50
+https://hnrss.org/newest?q=AI+agent&points=20

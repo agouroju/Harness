@@ -72,9 +72,62 @@ In Airbyte Cloud: create **GitHub** source (track the repos in `config.py`) and 
 ## Run it
 
 ```bash
-uv run python -m src.main --once    # one full autonomous run (ingest → analyze → publish)
+uv run python -m src.main --once    # analyze synced data → publish
 uv run python -m src.main --loop    # run every RADAR_INTERVAL_MIN minutes, forever
 ```
+
+Direct Python ingestion is legacy-only:
+
+```bash
+uv run python -m src.main --once --direct-ingest
+```
+
+## Run as a web app
+
+The web app is the Airbyte-managed operating mode. Sources are added in the UI,
+Airbyte connection syncs are triggered from the app, and scheduled runs analyze
+data already synced into ClickHouse. It does **not** call the direct Python
+ingester.
+
+```bash
+uv run python -m src.webapp
+```
+
+Open `http://localhost:8000`, add sources with their Airbyte connection IDs,
+and use **Run now** to trigger an Airbyte refresh followed by analysis and
+publishing.
+
+Useful env vars:
+
+```bash
+AIRBYTE_API_TOKEN=...
+AIRBYTE_API_URL=https://api.airbyte.com/v1
+AIRBYTE_SYNC_WAIT_SECONDS=120
+WEB_RUN_INTERVAL_HOURS=6
+WEB_USERNAME=admin
+WEB_PASSWORD=choose-a-password
+```
+
+For deployment, the included `Procfile` runs:
+
+```bash
+python -m src.webapp
+```
+
+## Manage watched repos
+
+The radar watches GitHub repos listed in `tracked_repos.txt`. Add, remove, or
+inspect repos without editing Python code:
+
+```bash
+uv run python -m src.main --list-repos
+uv run python -m src.main --add-repo stripe/stripe-python
+uv run python -m src.main --remove-repo stripe/stripe-python
+```
+
+This updates the direct GitHub ingester immediately. If you also want Airbyte to
+sync the new repo into `radar_airbyte.*`, update the GitHub source in Airbyte
+Cloud as well.
 
 ## Demo script (3 min)
 

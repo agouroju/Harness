@@ -7,13 +7,17 @@ so the agent is identical either way.
 
 import time
 from datetime import datetime, timedelta, timezone
+import html
+import re
 
 import requests
 
 from . import config
 
 HN_API = "https://hn.algolia.com/api/v1/search_by_date"
+HN_ITEM_API = "https://hn.algolia.com/api/v1/items"
 GH_API = "https://api.github.com"
+HEADERS = {"User-Agent": "AI-DevTool-Radar/0.1 (+https://cited.md)"}
 
 
 def _gh_headers():
@@ -23,9 +27,125 @@ def _gh_headers():
     return headers
 
 
+def _clean_comment_text(value: str) -> str:
+    text = html.unescape(value or "")
+    text = re.sub(r"<p\s*/?>", "\n", text)
+    text = re.sub(r"<br\s*/?>", "\n", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:1200]
+
+
+def _clean_page_text(value: str) -> str:
+    text = re.sub(r"<script[\s\S]*?</script>", " ", value, flags=re.IGNORECASE)
+    text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<noscript[\s\S]*?</noscript>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<(p|div|section|article|header|li|br|h[1-6])[^>]*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r"\n\s+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text[:config.HN_PAGE_TEXT_LIMIT]
+
+
+def _page_title(value: str, fallback: str) -> str:
+    match = re.search(r"<title[^>]*>(.*?)</title>", value, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return fallback
+    title = html.unescape(re.sub(r"\s+", " ", match.group(1))).strip()
+    return title[:300] or fallback
+
+
+def _walk_comments(story_id: int, node: dict, rows: list[list], limit: int) -> None:
+    if len(rows) >= limit:
+        return
+    if node.get("type") == "comment":
+        text = _clean_comment_text(node.get("text") or "")
+        if text:
+            created_at_i = node.get("created_at_i")
+            rows.append(
+                [
+                    story_id,
+                    int(node["id"]),
+                    node.get("author") or "",
+                    text,
+                    datetime.fromtimestamp(created_at_i, tz=timezone.utc).replace(tzinfo=None)
+                    if created_at_i else datetime.now(timezone.utc).replace(tzinfo=None),
+                ]
+            )
+    for child in node.get("children", []) or []:
+        _walk_comments(story_id, child, rows, limit)
+        if len(rows) >= limit:
+            return
+
+
+def ingest_hn_comments(ch, stories: list[dict]) -> int:
+    """Fetch representative HN discussion text for the highest-signal stories."""
+    comment_rows = []
+    candidates = sorted(
+        stories,
+        key=lambda story: (story["num_comments"], story["points"]),
+        reverse=True,
+    )[:config.HN_COMMENT_STORY_LIMIT]
+
+    for story in candidates:
+        resp = requests.get(f"{HN_ITEM_API}/{story['id']}", timeout=30)
+        if resp.status_code != 200:
+            continue
+        story_rows = []
+        _walk_comments(story["id"], resp.json(), story_rows, config.HN_COMMENT_LIMIT)
+        comment_rows.extend(story_rows)
+        time.sleep(0.2)
+
+    if comment_rows:
+        ch.insert(
+            f"{config.CLICKHOUSE_DATABASE}.hn_comments",
+            comment_rows,
+            column_names=["story_id", "id", "author", "text", "created_at"],
+        )
+    return len(comment_rows)
+
+
+def ingest_hn_pages(ch, stories: list[dict]) -> int:
+    """Fetch source-page excerpts so briefings can explain what triggered discussion."""
+    page_rows = []
+    candidates = sorted(
+        stories,
+        key=lambda story: (story["num_comments"], story["points"]),
+        reverse=True,
+    )[:config.HN_PAGE_STORY_LIMIT]
+
+    for story in candidates:
+        url = story["url"]
+        if not url or url.startswith("https://news.ycombinator.com/"):
+            continue
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=20)
+        except requests.RequestException:
+            continue
+        content_type = resp.headers.get("content-type", "")
+        if resp.status_code != 200 or "text/html" not in content_type:
+            continue
+        text = _clean_page_text(resp.text)
+        if len(text) < 200:
+            continue
+        page_rows.append([story["id"], url, _page_title(resp.text, story["title"]), text])
+        time.sleep(0.2)
+
+    if page_rows:
+        ch.insert(
+            f"{config.CLICKHOUSE_DATABASE}.hn_story_pages",
+            page_rows,
+            column_names=["story_id", "url", "title", "text"],
+        )
+    return len(page_rows)
+
+
 def ingest_hn(ch) -> int:
     since = int((datetime.now(timezone.utc) - timedelta(hours=config.RADAR_LOOKBACK_HOURS)).timestamp())
     rows = []
+    stories_by_id = {}
     for query in config.HN_QUERIES:
         resp = requests.get(
             HN_API,
@@ -39,15 +159,25 @@ def ingest_hn(ch) -> int:
         )
         resp.raise_for_status()
         for hit in resp.json().get("hits", []):
+            story = {
+                "id": int(hit["objectID"]),
+                "title": hit.get("title") or "",
+                "url": hit.get("url") or f"https://news.ycombinator.com/item?id={hit['objectID']}",
+                "points": int(hit.get("points") or 0),
+                "num_comments": int(hit.get("num_comments") or 0),
+                "author": hit.get("author") or "",
+                "created_at": datetime.fromtimestamp(hit["created_at_i"], tz=timezone.utc).replace(tzinfo=None),
+            }
+            stories_by_id[story["id"]] = story
             rows.append(
                 [
-                    int(hit["objectID"]),
-                    hit.get("title") or "",
-                    hit.get("url") or f"https://news.ycombinator.com/item?id={hit['objectID']}",
-                    int(hit.get("points") or 0),
-                    int(hit.get("num_comments") or 0),
-                    hit.get("author") or "",
-                    datetime.fromtimestamp(hit["created_at_i"], tz=timezone.utc).replace(tzinfo=None),
+                    story["id"],
+                    story["title"],
+                    story["url"],
+                    story["points"],
+                    story["num_comments"],
+                    story["author"],
+                    story["created_at"],
                     query,
                 ]
             )
@@ -61,6 +191,10 @@ def ingest_hn(ch) -> int:
                 "author", "created_at", "matched_query",
             ],
         )
+    page_count = ingest_hn_pages(ch, list(stories_by_id.values())) if stories_by_id else 0
+    comment_count = ingest_hn_comments(ch, list(stories_by_id.values())) if stories_by_id else 0
+    print(f"  {page_count} HN source pages captured for trigger summaries")
+    print(f"  {comment_count} HN comments captured for discussion summaries")
     return len(rows)
 
 

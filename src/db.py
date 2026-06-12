@@ -19,6 +19,25 @@ DDL = [
     ) ENGINE = ReplacingMergeTree(fetched_at) ORDER BY id
     """,
     """
+    CREATE TABLE IF NOT EXISTS {db}.hn_comments (
+        story_id UInt64,
+        id UInt64,
+        author String,
+        text String,
+        created_at DateTime,
+        fetched_at DateTime DEFAULT now()
+    ) ENGINE = ReplacingMergeTree(fetched_at) ORDER BY (story_id, id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS {db}.hn_story_pages (
+        story_id UInt64,
+        url String,
+        title String,
+        text String,
+        fetched_at DateTime DEFAULT now()
+    ) ENGINE = ReplacingMergeTree(fetched_at) ORDER BY story_id
+    """,
+    """
     CREATE TABLE IF NOT EXISTS {db}.github_issues (
         repo String,
         number UInt32,
@@ -48,13 +67,19 @@ SCHEMA_DESCRIPTION = """
 Database: {db} (ClickHouse). Tables:
 
 %RADAR%.hn_stories(id, title, url, points, num_comments, author, created_at DateTime, matched_query)
-  -- Hacker News stories about AI dev tools. ReplacingMergeTree: use `FINAL` or max(fetched_at) dedup.
+  -- Hacker News stories about AI dev tools. ReplacingMergeTree: dedupe with argMax(..., fetched_at), not FINAL.
+
+%RADAR%.hn_comments(story_id, id, author, text, created_at DateTime)
+  -- Discussion comments for selected Hacker News stories. Use to summarize the actual debate, risks, and takeaways.
+
+%RADAR%.hn_story_pages(story_id, url, title, text)
+  -- Source-page excerpts for selected Hacker News stories. Use this first to explain what actually happened before summarizing reactions.
 
 %RADAR%.github_issues(repo, number, is_pr UInt8, title, url, author, state, comments, created_at, updated_at)
-  -- Issues AND pull requests (is_pr=1) for tracked AI tooling repos. ReplacingMergeTree: use `FINAL`.
+  -- Issues AND pull requests (is_pr=1) for tracked AI tooling repos. ReplacingMergeTree: dedupe with argMax(..., fetched_at), not FINAL.
 
 %RADAR%.github_repo_stats(repo, stars, forks, open_issues, watched_at)
-  -- Periodic star/fork snapshots per repo (append-only time series).
+  -- Periodic star/fork snapshots per repo (append-only time series). No title/url columns; use repo AS title and concat('https://github.com/', repo) AS url.
 """
 
 

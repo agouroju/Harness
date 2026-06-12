@@ -1,0 +1,13 @@
+# AI DevTool Radar repository watchlist
+# One GitHub repo per line, in owner/repo format.
+
+anthropics/claude-code
+openai/codex
+langchain-ai/langchain
+ComposioHQ/composio
+modelcontextprotocol/servers
+langfuse/langfuse
+crewAIInc/crewAI
+browser-use/browser-use
+All-Hands-AI/OpenHands
+thesysdev/openui
