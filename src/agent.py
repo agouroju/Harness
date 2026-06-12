@@ -48,10 +48,10 @@ Respond as JSON: {{"seo_title": "...", "summary": "<one sentence>", "markdown": 
 
 
 @observe(name="propose-sql")
-def propose_queries() -> list[dict]:
+def propose_queries(ch) -> list[dict]:
     out = llm.complete_json(
         ANALYST_SYSTEM,
-        SQL_PROMPT.format(schema=db.schema_description(), hours=config.RADAR_LOOKBACK_HOURS),
+        SQL_PROMPT.format(schema=db.schema_description(ch), hours=config.RADAR_LOOKBACK_HOURS),
     )
     return out.get("queries", [])[:3]
 
@@ -96,7 +96,7 @@ def run_once() -> dict:
     counts = ingest.run(ch)
 
     print("Agent proposing SQL...")
-    queries = propose_queries()
+    queries = propose_queries(ch)
     findings = run_queries(ch, queries)
     if not findings:
         print("No successful queries — aborting run")

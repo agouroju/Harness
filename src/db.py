@@ -73,8 +73,24 @@ def init(ch) -> None:
         ch.command(stmt.format(db=config.CLICKHOUSE_DATABASE))
 
 
-def schema_description() -> str:
-    return SCHEMA_DESCRIPTION.replace("%RADAR%", config.CLICKHOUSE_DATABASE).format(db=config.CLICKHOUSE_DATABASE)
+def schema_description(ch=None) -> str:
+    base = SCHEMA_DESCRIPTION.replace("%RADAR%", config.CLICKHOUSE_DATABASE).format(db=config.CLICKHOUSE_DATABASE)
+    if ch is None:
+        return base
+    try:
+        rows = ch.query(
+            "SELECT table, groupArray(name) FROM system.columns "
+            "WHERE database = 'radar_airbyte' AND name NOT LIKE '\\\\_airbyte%' "
+            "GROUP BY table"
+        ).result_rows
+    except Exception:
+        rows = []
+    if not rows:
+        return base
+    extra = ["", "Additional tables synced by Airbyte from the GitHub API (richer fields):"]
+    for table, cols in rows:
+        extra.append(f"radar_airbyte.{table}({', '.join(cols[:14])}{', ...' if len(cols) > 14 else ''})")
+    return base + "\n".join(extra)
 
 
 def run_select(ch, sql: str, max_rows: int = 50):
