@@ -119,8 +119,9 @@ TRACKED_REPOS = _load_tracked_repos()
 TRACKED_FEEDS_FILE = os.getenv("TRACKED_FEEDS_FILE", "tracked_feeds.txt")
 
 DEFAULT_TRACKED_FEEDS = [
-    "https://openai.com/news/rss.xml",            # OpenAI blog/news
-    "https://rsshub.app/anthropic/news",          # Anthropic news (RSS mirror; no official feed)
+    # OpenAI/Anthropic don't serve RSS to bots; Google News search feeds mirror them reliably
+    "https://news.google.com/rss/search?q=site:openai.com&hl=en-US&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=site:anthropic.com&hl=en-US&gl=US&ceid=US:en",
     "https://blog.google/technology/ai/rss/",     # Google AI blog
     "https://huggingface.co/blog/feed.xml",       # Hugging Face blog
     "https://blog.langchain.dev/rss/",            # LangChain blog

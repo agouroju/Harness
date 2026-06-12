@@ -1,8 +1,8 @@
 # AI DevTool Radar feed watchlist
 # One RSS/Atom feed URL per line (LLM provider blogs, AI tool sites, HN searches).
 
-https://openai.com/news/rss.xml
-https://rsshub.app/anthropic/news
+https://news.google.com/rss/search?q=site:openai.com&hl=en-US&gl=US&ceid=US:en
+https://news.google.com/rss/search?q=site:anthropic.com&hl=en-US&gl=US&ceid=US:en
 https://blog.google/technology/ai/rss/
 https://huggingface.co/blog/feed.xml
 https://blog.langchain.dev/rss/
