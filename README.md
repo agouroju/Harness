@@ -158,6 +158,18 @@ uv run python -m src.main --add-repo vercel/ai
 uv run python -m src.main --list-feeds / --list-repos
 ```
 
+## Future work
+
+- **Better article summarization.** The briefing quality is good but not where we want
+  it: the agent sometimes leans on engagement metrics instead of substance, and
+  long-form sources deserve tighter synthesis. This is largely a **prompt-engineering
+  problem** — refining the drafting prompt (section structure, cause-before-reaction
+  ordering, stricter use of the full-article excerpts) and adding a critique/revise
+  pass would noticeably raise the bar without any architecture changes.
+- **x402 paywall** for premium per-company deep-dive reports (see Monetization above).
+- **Persist watchlists in ClickHouse** instead of text files, so source edits survive
+  redeploys on ephemeral hosting.
+
 ## Repo map
 
 `src/agent.py` the brain · `src/pipelines.py` watchlist→Airbyte reconciler ·
