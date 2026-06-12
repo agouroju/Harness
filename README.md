@@ -74,16 +74,70 @@ Everything else is autonomous:
 
 ## Judging criteria mapping
 
-- **Autonomy** — two independent schedules (hourly Airbyte syncs + 6-hour analysis runs);
-  zero human input from data to published article
-- **Idea** — an analyst that never sleeps and always shows receipts; sources are
-  user-configurable so it generalizes to any vertical
-- **Technical implementation** — agent writes its own SQL; pipelines are created
-  programmatically; publish path reverse-engineered to Senso's content engine; full
-  tracing; SELECT-only SQL guard
-- **Tool use** — five sponsor tools, each load-bearing (table above)
-- **Monetization (next step)** — premium per-company deep-dives behind an **x402**
-  paywall: other agents pay per request to read; cited.md is already agent-consumable
+### Autonomy — acts on real-time data with no manual intervention
+
+The radar runs on two independent clocks and needs nobody at the keyboard. Airbyte
+syncs all 13 pipelines **every hour**, so ClickHouse always holds fresh, real-time
+data. The Render scheduler then fires a full analysis run **every 6 hours**: it
+triggers syncs, lets the agent explore the data, drafts the briefing, and publishes
+to cited.md. From a new blog post appearing on openai.com to that post being analyzed
+and cited in a published article, **no human touches anything** — the article at
+cited.md is regenerated and updated throughout the day entirely on its own. Even the
+data pipelines are self-managing: when a source is added or removed, the app
+reconciles Airbyte to match without anyone opening the Airbyte UI.
+
+### Idea — a real problem with real-world value
+
+Every team building on AI tooling burns hours a week keeping up with model releases,
+breaking changes, and ecosystem debates — or pays analysts who summarize slowly and
+rarely cite sources. The radar is an analyst that never sleeps and always shows
+receipts: every claim in every briefing links to the issue, post, or thread it came
+from, so readers can verify rather than trust. Because the watchlist is the only
+configuration, the same system generalizes beyond AI tooling to any vertical —
+point it at fintech blogs and banking repos and it becomes a fintech analyst.
+
+### Technical implementation — how it's built
+
+The core design choice: **the agent's intelligence is SQL it writes itself.** Each
+run, the LLM is shown the live database schema (including tables Airbyte created
+minutes ago, discovered dynamically) and proposes its own analytical queries —
+issue-spike detection, star-growth ranking, provider-news triage — executed behind a
+SELECT-only guard. Selected findings are then *deepened*: the agent fetches the full
+source articles and HN comment threads so it summarizes what actually happened, not
+RSS snippets. Other implementation details judges may appreciate: Airbyte pipelines
+are created/deleted programmatically through its API (token-minting client built from
+scratch); the Senso publish path required reverse-engineering their CLI to find the
+content-engine endpoints and an undocumented destination-activation call; ClickHouse
+Cloud quirks (no `FINAL` on SharedMergeTree, stateless HTTP sessions) are handled
+explicitly; and every run is one inspectable Langfuse trace showing the exact SQL the
+agent chose, every prompt, and the cost (~$0.0002/run).
+
+### Tool use — five sponsor tools, each one load-bearing
+
+No tool here is a checkbox: remove any one and a whole layer disappears. **Airbyte**
+is the entire ingestion layer *and* the control plane the app drives via API.
+**ClickHouse** is the memory and the analysis engine the agent reasons against.
+**Senso/cited.md** is both the ground-truth store and the publishing pipeline — the
+hackathon's required output path. **Langfuse** is the observability layer that makes
+an autonomous agent auditable. **Render** hosts the whole product — frontend
+dashboard, backend API, and scheduler in one web service. (See the tech-stack table
+above for exactly which part each handles.)
+
+### Presentation — see it in 3 minutes
+
+Open the [live app](https://ai-devtool-radar.onrender.com), add a feed and watch a
+real Airbyte pipeline get created, press **Sync & publish briefing**, inspect the
+agent's self-written SQL in Langfuse while it runs, then read the
+[published, fully-cited article](https://cited.md/article/d8589037-c7f0-4aa3-957f-5c7ba0f5600b)
+on cited.md.
+
+### Monetization — the business model (next step)
+
+The free daily briefing is the top of the funnel. Premium per-company deep-dive
+reports go behind an **x402 paywall** so *other agents* can purchase and consume them
+programmatically — cited.md is already an agent-readable endpoint, and the publishing
+pipeline already supports multiple distinct articles per day, so the only missing
+piece is the payment middleware.
 
 ## Run it yourself
 
